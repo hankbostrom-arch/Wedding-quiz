@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Bröllopsquizet</title>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- React + ReactDOM + Babel (in-browser JSX-kompilator) -->
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo } = React;
+
+// ─────────────────────────────────────────────
+//  BRÖLLOPSQUIZ · Stationsquiz för mobilen
+//  Admin-PIN: 2026  (ändra ADMIN_PIN nedan)
+// ─────────────────────────────────────────────
+
+const ADMIN_PIN = "2026";
+
+// ─────────────────────────────────────────────
+//  FIREBASE-KONFIG · Fyll i din databas-URL här!
+//  Se instruktionerna som följer med i chatten för
+//  hur du skapar ett gratis Firebase-projekt.
+// ─────────────────────────────────────────────
+const FIREBASE_DB_URL = "https://wedding-quiz-7611a-default-rtdb.europe-west1.firebasedatabase.app";
+const FIREBASE_CONFIGURED = !FIREBASE_DB_URL.includes("YOUR-PROJECT-ID");
+
+const DEFAULT_QUESTIONS = [
+  {
+    id: "q1", code: "DEJT",
+    text: "Var hade Lottie och Henrik sin första dejt?",
+    options: ["Boulebaren", "Big Bowl", "Shuffleboard på Interpol", "Escape room"],
+    correct: 0,
+  },
+  {
+    id: "q2", code: "KRAFT",
+    text: "2014 var Henrik med i VM i Mas-wrestling – var tog detta plats?",
+    options: ["Svalbard", "Sibirien", "Malta", "Grönland"],
+    correct: 1,
+  },
+  {
+    id: "q3", code: "DJUR",
+    text: "Vilket djur var Lottie tokig i som liten tjej?",
+    options: ["Groda", "Elefant", "Gris", "Känguru"],
+    correct: 2,
+  },
+  {
+    id: "q4", code: "LUGG",
+    text: "Vilka olika hårfärger hade Henrik under tonåren?",
+    options: ["Rosa och blont", "Rött och svart", "Mörkbrunt och blont", "Grönt och lila"],
+    correct: 1,
+  },
+  {
+    id: "q5", code: "KARLEK",
+    text: "Vem sa \u201djag älskar dig\u201d först?",
+    options: ["Henrik", "Lottie", "De har fortfarande inte sagt det", "De sa det samtidigt"],
+    correct: 1,
+  },
+  {
+    id: "q6", code: "MEDALJ",
+    text: "Vad tävlade Lottie i som barn?",
+    options: ["Dans", "Badminton", "Gymnastik", "Simning"],
+    correct: 2,
+  },
+  {
+    id: "q7", code: "NUDEL",
+    text: "Vad var Lotties favoriträtt när de träffades?",
+    options: [
+      "Makaroner, ketchup, skivad banan och riven cheddar",
+      "Ris, tonfisk ur burk, majonnäs och sweet chilisås",
+      "Nudlar, skinka, baconost på tub, sweet chilisås",
+      "Fil, cornflakes och ketchup",
+    ],
+    correct: 2,
+  },
+  {
+    id: "q8", code: "ENVIS",
+    text: "Vem av de två har svårast att erkänna att den har fel?",
+    options: ["Bruden", "Brudgummen", "Båda – därför blir det aldrig löst", "Ingen, de är kusligt mogna"],
+    correct: 1,
+  },
+  {
+    id: "q9", code: "RESA",
+    text: "Vart gick deras första gemensamma resa?",
+    options: ["Storstadshelg i Europa", "Sol och bad", "Skidresa", "Camping som testade förhållandet"],
+    correct: 0,
+  },
+  {
+    id: "q10", code: "GULD",
+    text: "Vilket år firar vi guldbröllop?",
+    options: ["2054", "2064", "2074", "2084"],
+    correct: 2,
+  },
+];
+
+// ── Storage helpers (Firebase Realtime Database, via REST/fetch) ──
+async function loadQuestions() {
+  try {
+    const res = await fetch(`${FIREBASE_DB_URL}/questions.json`);
+    const data = await res.json();
+    return data || null;
+  } catch { return null; }
+}
+async function saveQuestions(qs) {
+  try {
+    await fetch(`${FIREBASE_DB_URL}/questions.json`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(qs),
+    });
+  } catch {}
+}
+// Returns an object: { playerId: { name, answers }, ... } or {}
+async function listPlayers() {
+  try {
+    const res = await fetch(`${FIREBASE_DB_URL}/players.json`);
+    const data = await res.json();
+    return data || {};
+  } catch { return {}; }
+}
+async function loadPlayer(id) {
+  try {
+    const res = await fetch(`${FIREBASE_DB_URL}/players/${id}.json`);
+    const data = await res.json();
+    return data || null;
+  } catch { return null; }
+}
+async function savePlayer(id, data) {
+  try {
+    await fetch(`${FIREBASE_DB_URL}/players/${id}.json`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+  } catch {}
+}
+async function deleteAllPlayers() {
+  try { await fetch(`${FIREBASE_DB_URL}/players.json`, { method: "DELETE" }); } catch {}
+}
+
+// ── App ──────────────────────────────────────
+function App() {
+  const [view, setView] = useState("start"); // start | lobby | question | admin | adminpin
+  const [questions, setQuestions] = useState(null);
+  const [urlCode] = useState(() => {
+    try { return new URLSearchParams(window.location.search).get("code")?.toUpperCase() || null; }
+    catch { return null; }
+  });
+  const [name, setName] = useState("");
+  const [playerKey, setPlayerKey] = useState(null);
+  const [answers, setAnswers] = useState({});
+  const [codeInput, setCodeInput] = useState("");
+  const [activeQ, setActiveQ] = useState(null);
+  const [picked, setPicked] = useState(null);
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      let qs = await loadQuestions();
+      if (!qs) { qs = DEFAULT_QUESTIONS; await saveQuestions(qs); }
+      setQuestions(qs);
+    })();
+  }, []);
+
+  // ── Guest: join ──
+  async function join() {
+    const n = name.trim();
+    if (!n) { setMsg("Skriv ditt namn först."); return; }
+    setBusy(true); setMsg("");
+    const players = await listPlayers(); // { id: {name, answers}, ... }
+    let foundKey = null;
+    for (const [id, p] of Object.entries(players)) {
+      if (p?.name?.toLowerCase() === n.toLowerCase()) { foundKey = id; setAnswers(p.answers || {}); break; }
+    }
+    if (!foundKey) {
+      foundKey = "p" + Math.random().toString(36).slice(2, 10);
+      await savePlayer(foundKey, { name: n, answers: {} });
+      setAnswers({});
+    }
+    setPlayerKey(foundKey);
+    setBusy(false);
+
+    // Om QR-koden hade ett kodord med sig (?code=XXX) – hoppa rakt till frågan
+    if (urlCode) {
+      const q = questions.find((q) => q.code.toUpperCase() === urlCode);
+      if (q) {
+        setActiveQ(q);
+        const currentAnswers = (await loadPlayer(foundKey))?.answers || {};
+        setPicked(currentAnswers[q.id] ?? null);
+        setView("question");
+        return;
+      }
+    }
+    setView("lobby");
+  }
+
+  // ── Guest: unlock question by code ──
+  function unlock() {
+    const c = codeInput.trim().toUpperCase();
+    if (!c) return;
+    if (c === "ADMIN") { setCodeInput(""); setView("adminpin"); return; }
+    const q = questions.find((q) => q.code.toUpperCase() === c);
+    if (!q) { setMsg("Hittade ingen fråga med koden \u201d" + c + "\u201d. Kolla stavningen!"); return; }
+    setMsg("");
+    setCodeInput("");
+    setActiveQ(q);
+    setPicked(answers[q.id] ?? null);
+    setView("question");
+  }
+
+  async function submitAnswer() {
+    if (picked == null || !activeQ) return;
+    setBusy(true);
+    const next = { ...answers, [activeQ.id]: picked };
+    setAnswers(next);
+    await savePlayer(playerKey, { name: name.trim(), answers: next });
+    setBusy(false);
+    setView("lobby");
+    setMsg("Svar sparat! " + Object.keys(next).length + " av " + questions.length + " klara.");
+  }
+
+  const answeredCount = Object.keys(answers).length;
+
+  // ── Shared styles ──
+  const S = {
+    page: {
+      minHeight: "100vh", background: "#F7F3EA", color: "#2B2B26",
+      fontFamily: "'Karla', 'Avenir Next', 'Segoe UI', sans-serif",
+      display: "flex", flexDirection: "column", alignItems: "center",
+      padding: "24px 16px 48px",
+    },
+    card: {
+      width: "100%", maxWidth: 420, background: "#FFFDF8",
+      border: "1px solid #E3D9C6", borderRadius: 4,
+      boxShadow: "0 2px 24px rgba(60,50,30,0.08)", padding: "28px 22px",
+    },
+    display: { fontFamily: "'Cormorant Garamond', Georgia, serif" },
+    btn: {
+      width: "100%", padding: "14px", border: "none", borderRadius: 3,
+      background: "#3E4A3D", color: "#F7F3EA", fontSize: 16, fontWeight: 700,
+      letterSpacing: "0.06em", cursor: "pointer",
+    },
+    input: {
+      width: "100%", boxSizing: "border-box", padding: "13px 14px",
+      border: "1px solid #C9BFA9", borderRadius: 3, fontSize: 17,
+      background: "#FFFEFB", outline: "none",
+    },
+    eyebrow: {
+      fontSize: 11, letterSpacing: "0.28em", textTransform: "uppercase",
+      color: "#A8894F", fontWeight: 700, textAlign: "center",
+    },
+  };
+
+  const Fonts = () => (
+    <style>{`
+      @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=Karla:wght@400;700&display=swap');
+      button:focus-visible, input:focus-visible { outline: 2px solid #A8894F; outline-offset: 2px; }
+      @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+    `}</style>
+  );
+
+  const Rule = () => (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "14px 0" }}>
+      <div style={{ flex: 1, height: 1, background: "#E3D9C6" }} />
+      <div style={{ color: "#A8894F", fontSize: 13 }}>❦</div>
+      <div style={{ flex: 1, height: 1, background: "#E3D9C6" }} />
+    </div>
+  );
+
+  if (!FIREBASE_CONFIGURED) {
+    return (
+      <div style={S.page}><Fonts />
+        <div style={{ ...S.card, marginTop: 40 }}>
+          <div style={S.eyebrow}>Nästan klart</div>
+          <h2 style={{ ...S.display, fontSize: 26, fontWeight: 600, margin: "10px 0 14px", textAlign: "center" }}>
+            Koppla in databasen
+          </h2>
+          <p style={{ fontSize: 14, lineHeight: 1.6, color: "#5C574A" }}>
+            Quizet behöver en gratis Firebase-databas för att spara namn och svar utan att gästerna
+            behöver logga in någonstans. Byt ut <code>FIREBASE_DB_URL</code> högst upp i koden mot
+            din egen databas-URL – instruktionerna finns i chatten där quizet skapades.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!questions) {
+    return <div style={S.page}><Fonts /><div style={{ marginTop: 80, color: "#8B8574" }}>Dukar upp quizet …</div></div>;
+  }
+
+  // ── START ──
+  if (view === "start") {
+    return (
+      <div style={S.page}><Fonts />
+        <div style={{ ...S.card, marginTop: 36, textAlign: "center" }}>
+          <div style={S.eyebrow}>Välkommen till festen</div>
+          <h1 style={{ ...S.display, fontSize: 42, fontWeight: 500, margin: "14px 0 4px", lineHeight: 1.05 }}>
+            Bröllops<span style={{ fontStyle: "italic" }}>quizet</span>
+          </h1>
+          <Rule />
+          <p style={{ fontSize: 15, lineHeight: 1.55, color: "#5C574A", margin: "0 0 22px" }}>
+            Tio frågor om brudparet finns utplacerade på festen.
+            Hitta stationerna, skanna QR-koden och svara här i mobilen.
+            Bäst koll vinner!
+          </p>
+          {urlCode && (
+            <p style={{ fontSize: 13, color: "#A8894F", fontWeight: 700, marginTop: -8, marginBottom: 18 }}>
+              Station {urlCode} – skriv ditt namn så kommer frågan upp direkt.
+            </p>
+          )}
+          <input
+            style={{ ...S.input, textAlign: "center", marginBottom: 12 }}
+            placeholder="Ditt namn"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && join()}
+          />
+          <button style={S.btn} onClick={join} disabled={busy}>
+            {busy ? "ETT ÖGONBLICK …" : "JAG ÄR MED"}
+          </button>
+          {msg && <p style={{ color: "#9A4832", fontSize: 14, marginTop: 12 }}>{msg}</p>}
+          <p style={{ fontSize: 12, color: "#A39C89", marginTop: 18 }}>
+            Ditt namn och dina svar sparas gemensamt så att värdparet kan räkna ihop resultatet.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // ── LOBBY ──
+  if (view === "lobby") {
+    return (
+      <div style={S.page}><Fonts />
+        <div style={{ ...S.card, marginTop: 28 }}>
+          <div style={S.eyebrow}>Deltagare</div>
+          <h2 style={{ ...S.display, fontSize: 30, fontWeight: 500, textAlign: "center", margin: "8px 0 2px" }}>{name}</h2>
+          <p style={{ textAlign: "center", color: "#5C574A", fontSize: 14, margin: 0 }}>
+            {answeredCount} av {questions.length} frågor besvarade
+          </p>
+
+          {/* progress dots */}
+          <div style={{ display: "flex", justifyContent: "center", gap: 7, margin: "16px 0 4px", flexWrap: "wrap" }}>
+            {questions.map((q) => (
+              <div key={q.id} title={q.code} style={{
+                width: 12, height: 12, borderRadius: "50%",
+                background: answers[q.id] != null ? "#3E4A3D" : "transparent",
+                border: "1.5px solid " + (answers[q.id] != null ? "#3E4A3D" : "#C9BFA9"),
+              }} />
+            ))}
+          </div>
+
+          <Rule />
+          <p style={{ fontSize: 14, color: "#5C574A", textAlign: "center", marginTop: 0 }}>
+            Hittat en station? Skriv in kodordet:
+          </p>
+          <input
+            style={{ ...S.input, textAlign: "center", textTransform: "uppercase", letterSpacing: "0.25em", fontWeight: 700, marginBottom: 12 }}
+            placeholder="KODORD"
+            value={codeInput}
+            onChange={(e) => setCodeInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && unlock()}
+          />
+          <button style={S.btn} onClick={unlock}>LÅS UPP FRÅGAN</button>
+          {msg && <p style={{ color: msg.startsWith("Svar") ? "#3E4A3D" : "#9A4832", fontSize: 14, marginTop: 12, textAlign: "center" }}>{msg}</p>}
+
+          {answeredCount === questions.length && (
+            <p style={{ textAlign: "center", marginTop: 16, fontSize: 15, color: "#A8894F", fontWeight: 700 }}>
+              Alla frågor klara – skål för det! 🥂
+            </p>
+          )}
+        </div>
+        <button
+          onClick={() => setView("adminpin")}
+          style={{ marginTop: 22, background: "none", border: "none", color: "#A39C89", fontSize: 12, cursor: "pointer", textDecoration: "underline" }}
+        >
+          Värdparets vy
+        </button>
+      </div>
+    );
+  }
+
+  // ── QUESTION ──
+  if (view === "question" && activeQ) {
+    const already = answers[activeQ.id] != null;
+    const qIndex = questions.findIndex((q) => q.id === activeQ.id) + 1;
+    return (
+      <div style={S.page}><Fonts />
+        <div style={{ ...S.card, marginTop: 28 }}>
+          <div style={S.eyebrow}>Station {activeQ.code} · Fråga {qIndex}</div>
+          <h2 style={{ ...S.display, fontSize: 26, fontWeight: 600, lineHeight: 1.25, margin: "12px 0 18px", textAlign: "center" }}>
+            {activeQ.text}
+          </h2>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {activeQ.options.map((opt, i) => {
+              const sel = picked === i;
+              return (
+                <button key={i} onClick={() => !already && setPicked(i)} disabled={already}
+                  style={{
+                    textAlign: "left", padding: "13px 14px", fontSize: 15.5, lineHeight: 1.4,
+                    borderRadius: 3, cursor: already ? "default" : "pointer",
+                    border: "1.5px solid " + (sel ? "#3E4A3D" : "#DCD2BD"),
+                    background: sel ? "#3E4A3D" : "#FFFEFB",
+                    color: sel ? "#F7F3EA" : "#2B2B26",
+                    fontFamily: "inherit",
+                  }}>
+                  <span style={{ fontWeight: 700, marginRight: 8, color: sel ? "#D9C89A" : "#A8894F" }}>
+                    {String.fromCharCode(65 + i)}.
+                  </span>
+                  {opt}
+                </button>
+              );
+            })}
+          </div>
+          {already ? (
+            <p style={{ textAlign: "center", color: "#5C574A", fontSize: 14, marginTop: 16 }}>
+              Du har redan svarat på den här frågan – svaret är låst.
+            </p>
+          ) : (
+            <button style={{ ...S.btn, marginTop: 18, opacity: picked == null ? 0.5 : 1 }}
+              onClick={submitAnswer} disabled={picked == null || busy}>
+              {busy ? "SPARAR …" : "LÄMNA IN SVAR"}
+            </button>
+          )}
+          <button onClick={() => { setView("lobby"); setMsg(""); }}
+            style={{ marginTop: 12, width: "100%", background: "none", border: "none", color: "#8B8574", fontSize: 14, cursor: "pointer", textDecoration: "underline" }}>
+            Tillbaka
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── ADMIN PIN ──
+  if (view === "adminpin") {
+    return (
+      <div style={S.page}><Fonts />
+        <div style={{ ...S.card, marginTop: 60, textAlign: "center" }}>
+          <div style={S.eyebrow}>Värdparets vy</div>
+          <h2 style={{ ...S.display, fontSize: 28, fontWeight: 500, margin: "10px 0 16px" }}>Ange PIN-kod</h2>
+          <AdminPin onOk={() => setView("admin")} onBack={() => setView(playerKey ? "lobby" : "start")} S={S} />
+        </div>
+      </div>
+    );
+  }
+
+  // ── ADMIN ──
+  if (view === "admin") {
+    return <Admin questions={questions} setQuestions={setQuestions} S={S} Fonts={Fonts} Rule={Rule}
+      onBack={() => setView(playerKey ? "lobby" : "start")} />;
+  }
+
+  return null;
+}
+
+// ── Admin PIN component ──
+function AdminPin({ onOk, onBack, S }) {
+  const [pin, setPin] = useState("");
+  const [err, setErr] = useState(false);
+  function check() {
+    if (pin === ADMIN_PIN) onOk();
+    else { setErr(true); setPin(""); }
+  }
+  return (
+    <div>
+      <input style={{ ...S.input, textAlign: "center", letterSpacing: "0.4em", marginBottom: 12 }}
+        type="password" inputMode="numeric" placeholder="••••" value={pin}
+        onChange={(e) => { setPin(e.target.value); setErr(false); }}
+        onKeyDown={(e) => e.key === "Enter" && check()} />
+      <button style={S.btn} onClick={check}>ÖPPNA</button>
+      {err && <p style={{ color: "#9A4832", fontSize: 14, marginTop: 10 }}>Fel PIN-kod.</p>}
+      <button onClick={onBack} style={{ marginTop: 14, background: "none", border: "none", color: "#8B8574", fontSize: 14, cursor: "pointer", textDecoration: "underline" }}>
+        Tillbaka
+      </button>
+    </div>
+  );
+}
+
+// ── Admin view ──
+function Admin({ questions, setQuestions, S, Fonts, Rule, onBack }) {
+  const [tab, setTab] = useState("resultat"); // resultat | fragor | stationer
+  const [players, setPlayers] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [edited, setEdited] = useState(() => JSON.parse(JSON.stringify(questions)));
+  const [saved, setSaved] = useState(false);
+
+  async function refresh() {
+    setLoading(true);
+    const players = await listPlayers(); // { id: {name, answers}, ... }
+    const out = Object.entries(players)
+      .filter(([, p]) => p?.name)
+      .map(([key, p]) => ({ key, ...p }));
+    setPlayers(out);
+    setLoading(false);
+  }
+  useEffect(() => { if (tab === "resultat") refresh(); }, [tab]);
+
+  const board = useMemo(() => {
+    return players
+      .map((p) => {
+        let score = 0;
+        for (const q of questions) if (p.answers?.[q.id] === q.correct) score++;
+        return { name: p.name, score, count: Object.keys(p.answers || {}).length };
+      })
+      .sort((a, b) => b.score - a.score || b.count - a.count || a.name.localeCompare(b.name, "sv"));
+  }, [players, questions]);
+
+  async function saveEdits() {
+    setQuestions(edited);
+    await saveQuestions(edited);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2500);
+  }
+
+  async function resetAnswers() {
+    if (!window.confirm("Radera ALLA deltagares svar? Detta går inte att ångra.")) return;
+    await deleteAllPlayers();
+    refresh();
+  }
+
+  const tabBtn = (id, label) => (
+    <button onClick={() => setTab(id)} style={{
+      flex: 1, padding: "10px 4px", fontSize: 13, fontWeight: 700, letterSpacing: "0.08em",
+      border: "none", borderBottom: "2px solid " + (tab === id ? "#3E4A3D" : "transparent"),
+      background: "none", color: tab === id ? "#3E4A3D" : "#8B8574", cursor: "pointer",
+      textTransform: "uppercase",
+    }}>{label}</button>
+  );
+
+  return (
+    <div style={S.page}><Fonts />
+      <div style={{ ...S.card, marginTop: 24, maxWidth: 480 }}>
+        <div style={S.eyebrow}>Värdparets vy</div>
+        <div style={{ display: "flex", marginTop: 14, borderBottom: "1px solid #E3D9C6" }}>
+          {tabBtn("resultat", "Resultat")}
+          {tabBtn("fragor", "Frågor")}
+          {tabBtn("stationer", "Stationer")}
+        </div>
+
+        {/* RESULTAT */}
+        {tab === "resultat" && (
+          <div style={{ marginTop: 18 }}>
+            {loading ? <p style={{ color: "#8B8574" }}>Räknar ihop …</p> : board.length === 0 ? (
+              <p style={{ color: "#8B8574", textAlign: "center" }}>Inga deltagare ännu. När gästerna börjar svara dyker de upp här.</p>
+            ) : (
+              board.map((p, i) => (
+                <div key={p.name + i} style={{
+                  display: "flex", alignItems: "baseline", gap: 10, padding: "10px 6px",
+                  borderBottom: "1px solid #F0EADB",
+                  background: i === 0 ? "#FBF6E9" : "transparent",
+                }}>
+                  <span style={{ ...S.display, fontSize: 20, width: 28, color: i < 3 ? "#A8894F" : "#B7B09C" }}>{i + 1}</span>
+                  <span style={{ flex: 1, fontSize: 16, fontWeight: i === 0 ? 700 : 400 }}>
+                    {p.name} {i === 0 && "👑"}
+                  </span>
+                  <span style={{ fontSize: 14, color: "#8B8574" }}>{p.count}/{questions.length} svar</span>
+                  <span style={{ ...S.display, fontSize: 22, fontWeight: 600 }}>{p.score}p</span>
+                </div>
+              ))
+            )}
+            <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+              <button style={{ ...S.btn, flex: 1 }} onClick={refresh}>UPPDATERA</button>
+              <button onClick={resetAnswers} style={{
+                flex: 1, padding: "14px", borderRadius: 3, border: "1.5px solid #9A4832",
+                background: "none", color: "#9A4832", fontWeight: 700, fontSize: 14, cursor: "pointer",
+              }}>NOLLSTÄLL SVAR</button>
+            </div>
+          </div>
+        )}
+
+        {/* FRÅGOR */}
+        {tab === "fragor" && (
+          <div style={{ marginTop: 18 }}>
+            <p style={{ fontSize: 13, color: "#8B8574", marginTop: 0 }}>
+              Ändra frågor, svarsalternativ och rätt svar (klicka på bokstaven). Glöm inte att spara.
+            </p>
+            {edited.map((q, qi) => (
+              <div key={q.id} style={{ border: "1px solid #E3D9C6", borderRadius: 3, padding: 12, marginBottom: 14 }}>
+                <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
+                  <span style={{ ...S.eyebrow, fontSize: 10 }}>Kod</span>
+                  <input style={{ ...S.input, width: 90, padding: "6px 8px", fontSize: 14, fontWeight: 700, textTransform: "uppercase" }}
+                    value={q.code}
+                    onChange={(e) => { const c = [...edited]; c[qi] = { ...q, code: e.target.value.toUpperCase() }; setEdited(c); }} />
+                </div>
+                <textarea style={{ ...S.input, fontSize: 15, minHeight: 54, resize: "vertical", fontFamily: "inherit" }}
+                  value={q.text}
+                  onChange={(e) => { const c = [...edited]; c[qi] = { ...q, text: e.target.value }; setEdited(c); }} />
+                {q.options.map((o, oi) => (
+                  <div key={oi} style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
+                    <button onClick={() => { const c = [...edited]; c[qi] = { ...q, correct: oi }; setEdited(c); }}
+                      title="Markera som rätt svar"
+                      style={{
+                        width: 34, height: 34, borderRadius: "50%", fontWeight: 700, cursor: "pointer",
+                        border: "1.5px solid " + (q.correct === oi ? "#3E4A3D" : "#C9BFA9"),
+                        background: q.correct === oi ? "#3E4A3D" : "none",
+                        color: q.correct === oi ? "#F7F3EA" : "#8B8574",
+                      }}>
+                      {String.fromCharCode(65 + oi)}
+                    </button>
+                    <input style={{ ...S.input, padding: "8px 10px", fontSize: 14 }}
+                      value={o}
+                      onChange={(e) => { const c = [...edited]; const opts = [...q.options]; opts[oi] = e.target.value; c[qi] = { ...q, options: opts }; setEdited(c); }} />
+                  </div>
+                ))}
+              </div>
+            ))}
+            <button style={S.btn} onClick={saveEdits}>{saved ? "SPARAT ✓" : "SPARA FRÅGORNA"}</button>
+          </div>
+        )}
+
+        {/* STATIONER */}
+        {tab === "stationer" && (
+          <div style={{ marginTop: 18 }}>
+            <p style={{ fontSize: 14, color: "#5C574A", lineHeight: 1.55, marginTop: 0 }}>
+              Gör en QR-kod per station som pekar till <b>quizets länk + <code>?code=KODORD</code></b> –
+              se exempel-URL:er nedan (byt ut basadressen mot er publicerade länk). Då kommer gästen
+              rakt in på rätt fråga direkt vid skanning, ingen manuell inmatning behövs.
+            </p>
+            {questions.map((q, i) => (
+              <div key={q.id} style={{
+                display: "flex", alignItems: "center", gap: 12, padding: "12px 8px",
+                borderBottom: "1px solid #F0EADB", flexWrap: "wrap",
+              }}>
+                <span style={{ color: "#B7B09C", fontSize: 13, width: 60 }}>Fråga {i + 1}</span>
+                <span style={{
+                  ...S.display, fontSize: 22, fontWeight: 600, letterSpacing: "0.14em",
+                  border: "1.5px solid #A8894F", color: "#A8894F", borderRadius: 3, padding: "3px 12px",
+                }}>{q.code}</span>
+                <code style={{ fontSize: 11.5, color: "#8B8574", wordBreak: "break-all", flex: "1 1 100%" }}>
+                  {typeof window !== "undefined" ? window.location.origin + window.location.pathname : ""}?code={q.code}
+                </code>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <button onClick={onBack} style={{ marginTop: 20, width: "100%", background: "none", border: "none", color: "#8B8574", fontSize: 14, cursor: "pointer", textDecoration: "underline" }}>
+          Tillbaka till quizet
+        </button>
+      </div>
+    </div>
+  );
+}
+
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+</script>
+</body>
+</html>
